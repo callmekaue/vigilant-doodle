@@ -380,12 +380,14 @@ async function fetchRemoteDB(client){
   let classes = (classesR.data||[]).map(fromClassRow);
   if(classes.length===0){
     classes = DIAS.map((d,i)=> ({ id:d.id, name:d.nome, dayIndex:i }));
-    await client.from('classes').upsert(classes.map(toClassRow));
+    const { error } = await client.from('classes').upsert(classes.map(toClassRow));
+    if(error) throw error;
   }
   let categories = (catR.data||[]).map(r=>r.name);
   if(categories.length===0){
     categories = CATEGORIAS_PADRAO.slice();
-    await client.from('categories').upsert(categories.map(name=>({ name })));
+    const { error } = await client.from('categories').upsert(categories.map(name=>({ name })));
+    if(error) throw error;
   }
 
   const groups = (groupsR.data||[]).map(fromGroupRow);
@@ -629,6 +631,29 @@ function App(){
   const connectDb = useCallback((cfg)=>{ saveSbConfig(cfg); setSbConfig(cfg); }, []);
   const disconnectDb = useCallback(()=>{ saveSbConfig(null); setSbConfig(null); sbClientRef.current=null; setSbClient(null); setSyncStatus('local'); setSyncError(''); }, []);
 
+  /* Busca o estado mais recente do banco sob demanda (botão "Atualizar") — não derruba
+     a conexão se falhar, só avisa; usado também pelo polling automático abaixo. */
+  const refreshFromDb = useCallback(async (silent)=>{
+    const client = sbClientRef.current;
+    if(!client) return;
+    try{
+      const remote = await fetchRemoteDB(client);
+      setDb(remote);
+      if(!silent) notify('Dados atualizados a partir do banco.', 'success');
+    }catch(err){
+      console.error(err);
+      if(!silent) notify('Não foi possível atualizar agora. Veja o console (F12) para detalhes.', 'error');
+    }
+  }, [notify]);
+
+  /* Atualização automática em segundo plano, para que outro navegador/dispositivo
+     apareça sem precisar recarregar a página manualmente. */
+  useEffect(()=>{
+    if(syncStatus!=='connected') return;
+    const interval = setInterval(()=>{ refreshFromDb(true); }, 15000);
+    return ()=> clearInterval(interval);
+  }, [syncStatus, refreshFromDb]);
+
   /* roda uma escrita no Supabase sem travar a UI; se falhar, avisa mas mantém a alteração local */
   const sbPersist = useCallback((fn)=>{
     const client = sbClientRef.current;
@@ -871,7 +896,7 @@ function App(){
   const askConfirm = (opts)=> setModal({ type:'confirm', ...opts });
   const closeModal = ()=> setModal(null);
 
-  const sync = { status: syncStatus, error: syncError, config: sbConfig, connect: connectDb, disconnect: disconnectDb };
+  const sync = { status: syncStatus, error: syncError, config: sbConfig, connect: connectDb, disconnect: disconnectDb, refresh: refreshFromDb };
   const ctx = { db, actions, notify, navigate, askConfirm, closeModal, setModal, modal, sync };
 
   return (
@@ -929,6 +954,7 @@ function DbSettingsModal({ sync, notify, onClose }){
     <Modal title="Banco de dados (SQL)" onClose={onClose} width={560} footer={
       <React.Fragment>
         {sync.config && <button className="btn btn-danger" onClick={()=>{ sync.disconnect(); notify('Desconectado. Voltando a salvar apenas neste navegador.', 'info'); onClose(); }}>Desconectar</button>}
+        {sync.status==='connected' && <button className="btn btn-soft" onClick={()=>sync.refresh(false)}><Icon path={ICONS.refresh} size={14}/> Atualizar agora</button>}
         <button className="btn btn-ghost" onClick={onClose}>Fechar</button>
         <button className="btn btn-primary" onClick={connect} disabled={testing}>{testing?'Conectando...':'Conectar'}</button>
       </React.Fragment>
@@ -936,7 +962,7 @@ function DbSettingsModal({ sync, notify, onClose }){
       <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:16, padding:'10px 12px', borderRadius:9, background: sync.status==='connected' ? 'var(--success-soft)' : sync.status==='error' ? 'var(--danger-soft)' : 'var(--surface-2)' }}>
         <Icon path={sync.status==='connected' ? ICONS.database : ICONS.cloudOff} size={16} style={{ color: sync.status==='connected' ? '#8CF0B0' : sync.status==='error' ? '#FCA79E' : 'var(--text-muted)' }} />
         <div style={{ fontSize:12.5 }}>
-          {sync.status==='connected' && 'Conectado — os dados são salvos no banco SQL e acessíveis de qualquer dispositivo com estas credenciais.'}
+          {sync.status==='connected' && 'Conectado — os dados são salvos no banco SQL e acessíveis de qualquer dispositivo com estas credenciais. A tela se atualiza sozinha a cada 15s; use "Atualizar agora" para ver na hora.'}
           {sync.status==='error' && (sync.error || 'Falha na conexão.')}
           {sync.status==='local' && 'Nenhum banco conectado — os dados ficam salvos apenas neste navegador.'}
         </div>
@@ -1088,6 +1114,11 @@ function TopBar({ navigate, setModal, setMobileNavOpen, searchQuery, setSearchQu
 
         <div style={{ flex:1 }} />
 
+        {sync.status==='connected' && (
+          <button className="btn btn-ghost btn-sm" onClick={()=>sync.refresh(false)} title="Buscar alterações feitas em outro dispositivo agora">
+            <Icon path={ICONS.refresh} size={14}/>
+          </button>
+        )}
         <button className="btn btn-ghost btn-sm" onClick={()=>setModal({ type:'dbSettings' })} title={sync.status==='connected' ? 'Conectado ao banco SQL' : sync.status==='error' ? 'Erro de conexão com o banco' : 'Salvando apenas neste navegador'}>
           <Icon path={sync.status==='connected' ? ICONS.database : ICONS.cloudOff} size={14} style={{ color: sync.status==='connected' ? 'var(--success)' : sync.status==='error' ? 'var(--danger)' : 'var(--text-faint)' }}/>
           <span className="hide-mobile-label">{sync.status==='connected' ? 'Conectado' : sync.status==='error' ? 'Erro de conexão' : 'Local apenas'}</span>
