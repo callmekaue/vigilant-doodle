@@ -153,7 +153,7 @@ function createEmptyDatabase(){
   return {
     classes,
     groups: [], students: [], individualGrades: [], groupGradesHistory: [],
-    diaryEntries: [], groupHistory: [], studentHistory: [],
+    diaryEntries: [], groupHistory: [], studentHistory: [], classRepresentatives: [],
     categories: CATEGORIAS_PADRAO.slice(),
     meta: { demo:false, createdAt: Date.now() }
   };
@@ -182,6 +182,7 @@ function seedDatabase(){
   const diaryEntries = [];
   const groupHistory = [];
   const studentHistory = [];
+  const classRepresentatives = [];
 
   DIAS.forEach(dia=>{
     const n = gruposPorDia[dia.id];
@@ -208,6 +209,15 @@ function seedDatabase(){
         groupHistory.push({ id: uid('gh'), groupId, classId: dia.id, date: todayISO(-randInt(5,60)), description: `${students.find(s=>s.id===leader).name} tornou-se líder.` });
       }
     }
+  });
+
+  // representantes de turma demonstrativos (2 a 3 por dia, entre os alunos já criados)
+  DIAS.forEach(dia=>{
+    const classStudents = students.filter(s=>s.classId===dia.id);
+    if(!classStudents.length) return;
+    const qtd = Math.min(classStudents.length, randInt(2,3));
+    const shuffled = [...classStudents].sort(()=>Math.random()-0.5).slice(0, qtd);
+    shuffled.forEach(s=> classRepresentatives.push({ id: uid('rep'), classId: dia.id, studentId: s.id, createdAt: todayISO(-randInt(1,60)) }));
   });
 
   // um pouco de histórico de transferência para demonstrar o rastro preservado
@@ -248,13 +258,19 @@ function seedDatabase(){
   }
   diaryEntries.sort((a,b)=> a.date < b.date ? 1 : -1);
 
-  return { classes, groups, students, individualGrades, groupGradesHistory, diaryEntries, groupHistory, studentHistory, categories: CATEGORIAS_PADRAO.slice(), meta:{ demo:true, createdAt: Date.now() } };
+  return { classes, groups, students, individualGrades, groupGradesHistory, diaryEntries, groupHistory, studentHistory, classRepresentatives, categories: CATEGORIAS_PADRAO.slice(), meta:{ demo:true, createdAt: Date.now() } };
 }
 
+/* Garante que bases salvas antes de um novo recurso (ex.: classRepresentatives)
+   não quebrem a tela — preenche qualquer campo novo que esteja faltando. */
+function patchDbShape(db){
+  const empty = createEmptyDatabase();
+  return { ...empty, ...db, classRepresentatives: db.classRepresentatives || [] };
+}
 function loadDB(){
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
-    if(raw){ return JSON.parse(raw); }
+    if(raw){ return patchDbShape(JSON.parse(raw)); }
   }catch(e){ console.warn('Falha ao ler localStorage, recriando dados.', e); }
   const fresh = createEmptyDatabase();
   saveDB(fresh);
@@ -315,6 +331,9 @@ const fromGroupHistoryRow = r => ({ id:r.id, groupId:r.group_id, classId:r.class
 const toStudentHistoryRow = h => ({ id:h.id, student_id:h.studentId, date:h.date, from_group_id:h.fromGroupId||null, to_group_id:h.toGroupId||null, description:h.description });
 const fromStudentHistoryRow = r => ({ id:r.id, studentId:r.student_id, date:r.date, fromGroupId:r.from_group_id, toGroupId:r.to_group_id, description:r.description });
 
+const toClassRepRow = r => ({ id:r.id, class_id:r.classId, student_id:r.studentId, created_at:r.createdAt });
+const fromClassRepRow = r => ({ id:r.id, classId:r.class_id, studentId:r.student_id, createdAt:r.created_at });
+
 async function sbUpsert(client, table, row){
   if(!client) return;
   const { error } = await client.from(table).upsert(row);
@@ -362,7 +381,7 @@ async function testSbConnection(client){
 
 /* Busca o banco inteiro do Supabase e monta o objeto `db` no mesmo formato usado no app. */
 async function fetchRemoteDB(client){
-  const [classesR, groupsR, studentsR, igR, ggR, deR, ghR, shR, catR, metaR] = await Promise.all([
+  const [classesR, groupsR, studentsR, igR, ggR, deR, ghR, shR, catR, metaR, repR] = await Promise.all([
     client.from('classes').select('*'),
     client.from('groups').select('*'),
     client.from('students').select('*'),
@@ -373,9 +392,13 @@ async function fetchRemoteDB(client){
     client.from('student_history').select('*'),
     client.from('categories').select('*'),
     client.from('app_meta').select('*').eq('id','singleton').maybeSingle(),
+    client.from('class_representatives').select('*'),
   ]);
   const firstError = [classesR,groupsR,studentsR,igR,ggR,deR,ghR,shR,catR].map(r=>r.error).find(Boolean);
   if(firstError) throw firstError;
+  // class_representatives é uma tabela nova: se o projeto Supabase ainda não rodou o
+  // schema.sql atualizado, ignora silenciosamente em vez de travar a conexão toda.
+  if(repR.error) console.warn('Tabela class_representatives ainda não existe no banco. Rode o schema.sql atualizado para usar Representantes de Turma.', repR.error);
 
   let classes = (classesR.data||[]).map(fromClassRow);
   if(classes.length===0){
@@ -401,6 +424,7 @@ async function fetchRemoteDB(client){
     diaryEntries: (deR.data||[]).map(fromDiaryEntryRow).sort((a,b)=> a.date<b.date?1:-1),
     groupHistory: (ghR.data||[]).map(fromGroupHistoryRow),
     studentHistory: (shR.data||[]).map(fromStudentHistoryRow),
+    classRepresentatives: repR.error ? [] : (repR.data||[]).map(fromClassRepRow),
     meta: { demo:isDemo, createdAt: Date.now() }
   };
 }
@@ -414,11 +438,12 @@ async function fullPushDB(client, db){
     ['diary_entries', db.diaryEntries.map(toDiaryEntryRow)],
     ['group_history', db.groupHistory.map(toGroupHistoryRow)],
     ['student_history', db.studentHistory.map(toStudentHistoryRow)],
+    ['class_representatives', (db.classRepresentatives||[]).map(toClassRepRow)],
     ['students', db.students.map(toStudentRow)],
     ['groups', db.groups.map(toGroupRow)],
   ];
-  for(const [table] of childTables){ await wipeTable(client, table); }
-  for(const [table, rows] of childTables){ if(rows.length) await chunkedInsert(client, table, rows); }
+  for(const [table] of childTables){ try{ await wipeTable(client, table); }catch(e){ console.warn(`Não foi possível limpar ${table} (tabela pode não existir ainda).`, e); } }
+  for(const [table, rows] of childTables){ if(rows.length){ try{ await chunkedInsert(client, table, rows); }catch(e){ console.warn(`Não foi possível gravar em ${table}.`, e); } } }
   await client.from('classes').upsert(db.classes.map(toClassRow));
   await client.from('categories').upsert(db.categories.map(name=>({ name })));
   await sbUpsertMeta(client, db.meta && db.meta.demo);
@@ -811,6 +836,22 @@ function App(){
       notify('Liderança do grupo atualizada.', 'success');
     },
 
+    addRepresentative: (classId, studentId) => {
+      if(!studentId) return notify('Selecione um aluno.', 'error');
+      const already = db.classRepresentatives.find(r=> r.classId===classId && r.studentId===studentId);
+      if(already) return notify('Este aluno já é representante desta turma.', 'error');
+      const rep = { id: uid('rep'), classId, studentId, createdAt: todayISO() };
+      setDb(prev=>({ ...prev, classRepresentatives:[...(prev.classRepresentatives||[]), rep] }));
+      sbPersist(client=> sbInsert(client, 'class_representatives', toClassRepRow(rep)));
+      notify('Representante adicionado.', 'success');
+    },
+
+    removeRepresentative: (repId) => {
+      setDb(prev=>({ ...prev, classRepresentatives: (prev.classRepresentatives||[]).filter(r=>r.id!==repId) }));
+      sbPersist(client=> sbDeleteById(client, 'class_representatives', repId));
+      notify('Representante removido.', 'success');
+    },
+
     setGroupGrade: (groupId, value) => {
       const v = parseFloat(String(value).replace(',','.'));
       if(isNaN(v) || v<0 || v>10) return notify('A nota deve estar entre 0 e 10.', 'error');
@@ -874,7 +915,7 @@ function App(){
       setDb(prev=>{
         next = {
           classes: prev.classes, categories: prev.categories,
-          groups:[], students:[], individualGrades:[], groupGradesHistory:[], diaryEntries:[], groupHistory:[], studentHistory:[],
+          groups:[], students:[], individualGrades:[], groupGradesHistory:[], diaryEntries:[], groupHistory:[], studentHistory:[], classRepresentatives:[],
           meta:{ demo:false, createdAt: Date.now() }
         };
         return next;
@@ -1167,6 +1208,7 @@ function QuickActionModal({ ctx, kind, onClose }){
    ============================================================ */
 function Dashboard({ ctx, getClassStats }){
   const { db, navigate } = ctx;
+  const [tab, setTab] = useState('overview');
   const totalAlunos = db.students.filter(s=>s.status==='ativo').length;
   const totalGrupos = db.groups.filter(g=>g.status==='ativo').length;
   const totalTurmas = DIAS.length;
@@ -1193,99 +1235,173 @@ function Dashboard({ ctx, getClassStats }){
 
   return (
     <div className="fade-up">
-      <div style={{ marginBottom:22 }}>
+      <div style={{ marginBottom:14 }}>
         <h1 style={{ fontSize:26, margin:'0 0 4px', fontWeight:600 }}>Central de Controle</h1>
         <p style={{ margin:0, color:'var(--text-muted)', fontSize:13.5 }}>Visão geral de todas as turmas, grupos e atividades.</p>
       </div>
 
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(150px,1fr))', gap:12, marginBottom:22 }}>
-        <StatCard label="Total de alunos" value={totalAlunos} icon={ICONS.users} tone="indigo" />
-        <StatCard label="Total de grupos" value={totalGrupos} icon={ICONS.grid} tone="teal" />
-        <StatCard label="Turmas ativas" value={totalTurmas} icon={ICONS.clock} tone="accent" />
-        <StatCard label="Líderes definidos" value={totalLideres} icon={ICONS.trophy} tone="warn" />
-        <StatCard label="Média geral" value={mediaGeral===null?'—':fmtGrade(mediaGeral)} icon={ICONS.file} tone="success" />
+      <div style={{ display:'flex', gap:22, borderBottom:'1px solid var(--border)', marginBottom:20 }}>
+        <button onClick={()=>setTab('overview')} className={`tab-btn ${tab==='overview'?'active':''}`} style={{ background:'none' }}>Visão geral</button>
+        <button onClick={()=>setTab('representatives')} className={`tab-btn ${tab==='representatives'?'active':''}`} style={{ background:'none' }}>Representantes de turma</button>
       </div>
 
-      <div style={{ marginBottom:12, display:'flex', alignItems:'baseline', justifyContent:'space-between' }}>
-        <h2 style={{ fontSize:17, margin:0, fontWeight:600 }}>Turmas da semana</h2>
-        <span style={{ fontSize:12, color:'var(--text-faint)' }}>Clique em um dia para abrir a turma</span>
-      </div>
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(190px,1fr))', gap:12, marginBottom:28 }}>
-        {DIAS.map((d,i)=>{
-          const st = getClassStats(d.id);
-          return (
-            <div key={d.id} onClick={()=>navigate('day',{classId:d.id})} className="card card-hover fade-up" style={{ padding:16, cursor:'pointer', animationDelay:`${i*40}ms` }}>
-              <div style={{ fontSize:11, fontWeight:700, color:'var(--text-faint)', letterSpacing:'.03em', marginBottom:10 }}>{d.nome.toUpperCase()}</div>
-              <div style={{ display:'flex', gap:16, marginBottom:10 }}>
-                <div>
-                  <div className="font-display" style={{ fontSize:22, fontWeight:600 }}>{st.groups}</div>
-                  <div style={{ fontSize:11, color:'var(--text-faint)' }}>grupos</div>
-                </div>
-                <div>
-                  <div className="font-display" style={{ fontSize:22, fontWeight:600 }}>{st.students}</div>
-                  <div style={{ fontSize:11, color:'var(--text-faint)' }}>alunos</div>
-                </div>
-              </div>
-              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                <StatusBadge tone="warn"><Icon path={ICONS.trophy} size={11}/> {st.leaders} líder{st.leaders!==1?'es':''}</StatusBadge>
-                <span style={{ fontSize:12.5, fontWeight:700, color:'var(--text-muted)' }}>{st.media===null?'—':fmtGrade(st.media)}</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div style={{ display:'grid', gridTemplateColumns:'1.3fr 1fr', gap:16, marginBottom:24 }} className="grid-stack">
-        <div className="card" style={{ padding:18 }}>
-          <h3 style={{ margin:'0 0 14px', fontSize:15, fontWeight:600 }}>Alunos por dia</h3>
-          <ChartCanvas type="bar" data={barData} height={230} />
-        </div>
-        <div className="card" style={{ padding:18 }}>
-          <h3 style={{ margin:'0 0 12px', fontSize:15, fontWeight:600 }}>Líderes atuais</h3>
-          <div style={{ display:'flex', flexDirection:'column', gap:2, maxHeight:230, overflowY:'auto' }}>
-            {lideresAtuais.length===0 && <EmptyState small text="Nenhum líder definido ainda." />}
-            {lideresAtuais.map(({group,student})=>(
-              <div key={group.id} onClick={()=>navigate('group',{groupId:group.id})} className="sidebar-link" style={{ cursor:'pointer', color:'var(--text)', justifyContent:'space-between' }}>
-                <span style={{ display:'flex', alignItems:'center', gap:8 }}><LeaderBadge/> {student.name}</span>
-                <span style={{ fontSize:11.5, color:'var(--text-faint)' }}>{group.name} · {db.classes.find(c=>c.id===group.classId).name.replace('-feira','')}</span>
-              </div>
-            ))}
+      {tab==='overview' && (
+        <React.Fragment>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(150px,1fr))', gap:12, marginBottom:22 }}>
+            <StatCard label="Total de alunos" value={totalAlunos} icon={ICONS.users} tone="indigo" />
+            <StatCard label="Total de grupos" value={totalGrupos} icon={ICONS.grid} tone="teal" />
+            <StatCard label="Turmas ativas" value={totalTurmas} icon={ICONS.clock} tone="accent" />
+            <StatCard label="Líderes definidos" value={totalLideres} icon={ICONS.trophy} tone="warn" />
+            <StatCard label="Média geral" value={mediaGeral===null?'—':fmtGrade(mediaGeral)} icon={ICONS.file} tone="success" />
           </div>
-        </div>
-      </div>
 
-      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }} className="grid-stack">
-        <div className="card" style={{ padding:18 }}>
-          <h3 style={{ margin:'0 0 12px', fontSize:15, fontWeight:600 }}>Ocorrências recentes</h3>
-          <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-            {ocorrenciasRecentes.length===0 && <EmptyState small text="Nenhum registro no diário ainda." />}
-            {ocorrenciasRecentes.map(o=>{
-              const group = db.groups.find(g=>g.id===o.groupId);
+          <div style={{ marginBottom:12, display:'flex', alignItems:'baseline', justifyContent:'space-between' }}>
+            <h2 style={{ fontSize:17, margin:0, fontWeight:600 }}>Turmas da semana</h2>
+            <span style={{ fontSize:12, color:'var(--text-faint)' }}>Clique em um dia para abrir a turma</span>
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(190px,1fr))', gap:12, marginBottom:28 }}>
+            {DIAS.map((d,i)=>{
+              const st = getClassStats(d.id);
               return (
-                <div key={o.id} style={{ display:'flex', gap:10, alignItems:'flex-start' }}>
-                  <div style={{ marginTop:5 }}><CategoryDot category={o.category}/></div>
-                  <div>
-                    <div style={{ fontSize:13, lineHeight:1.4 }}>{o.description}</div>
-                    <div style={{ fontSize:11, color:'var(--text-faint)', marginTop:2 }}>{fmtDate(o.date)} · {group?group.name:''} · {db.classes.find(c=>c.id===o.classId).name}</div>
+                <div key={d.id} onClick={()=>navigate('day',{classId:d.id})} className="card card-hover fade-up" style={{ padding:16, cursor:'pointer', animationDelay:`${i*40}ms` }}>
+                  <div style={{ fontSize:11, fontWeight:700, color:'var(--text-faint)', letterSpacing:'.03em', marginBottom:10 }}>{d.nome.toUpperCase()}</div>
+                  <div style={{ display:'flex', gap:16, marginBottom:10 }}>
+                    <div>
+                      <div className="font-display" style={{ fontSize:22, fontWeight:600 }}>{st.groups}</div>
+                      <div style={{ fontSize:11, color:'var(--text-faint)' }}>grupos</div>
+                    </div>
+                    <div>
+                      <div className="font-display" style={{ fontSize:22, fontWeight:600 }}>{st.students}</div>
+                      <div style={{ fontSize:11, color:'var(--text-faint)' }}>alunos</div>
+                    </div>
+                  </div>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                    <StatusBadge tone="warn"><Icon path={ICONS.trophy} size={11}/> {st.leaders} líder{st.leaders!==1?'es':''}</StatusBadge>
+                    <span style={{ fontSize:12.5, fontWeight:700, color:'var(--text-muted)' }}>{st.media===null?'—':fmtGrade(st.media)}</span>
                   </div>
                 </div>
               );
             })}
           </div>
-        </div>
-        <div className="card" style={{ padding:18 }}>
-          <h3 style={{ margin:'0 0 12px', fontSize:15, fontWeight:600 }}>Últimas alterações</h3>
-          <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-            {atividades.length===0 && <EmptyState small text="Nenhuma atividade registrada ainda." />}
-            {atividades.map((a,idx)=>(
-              <div key={idx} style={{ fontSize:13, lineHeight:1.4, display:'flex', gap:8 }}>
-                <span style={{ color:'var(--text-faint)', fontSize:11.5, flexShrink:0, width:66 }}>{fmtDate(a.date)}</span>
-                <span>{a.text}</span>
+
+          <div style={{ display:'grid', gridTemplateColumns:'1.3fr 1fr', gap:16, marginBottom:24 }} className="grid-stack">
+            <div className="card" style={{ padding:18 }}>
+              <h3 style={{ margin:'0 0 14px', fontSize:15, fontWeight:600 }}>Alunos por dia</h3>
+              <ChartCanvas type="bar" data={barData} height={230} />
+            </div>
+            <div className="card" style={{ padding:18 }}>
+              <h3 style={{ margin:'0 0 12px', fontSize:15, fontWeight:600 }}>Líderes atuais</h3>
+              <div style={{ display:'flex', flexDirection:'column', gap:2, maxHeight:230, overflowY:'auto' }}>
+                {lideresAtuais.length===0 && <EmptyState small text="Nenhum líder definido ainda." />}
+                {lideresAtuais.map(({group,student})=>(
+                  <div key={group.id} onClick={()=>navigate('group',{groupId:group.id})} className="sidebar-link" style={{ cursor:'pointer', color:'var(--text)', justifyContent:'space-between' }}>
+                    <span style={{ display:'flex', alignItems:'center', gap:8 }}><LeaderBadge/> {student.name}</span>
+                    <span style={{ fontSize:11.5, color:'var(--text-faint)' }}>{group.name} · {db.classes.find(c=>c.id===group.classId).name.replace('-feira','')}</span>
+                  </div>
+                ))}
               </div>
-            ))}
+            </div>
           </div>
-        </div>
+
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:16 }} className="grid-stack">
+            <div className="card" style={{ padding:18 }}>
+              <h3 style={{ margin:'0 0 12px', fontSize:15, fontWeight:600 }}>Ocorrências recentes</h3>
+              <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+                {ocorrenciasRecentes.length===0 && <EmptyState small text="Nenhum registro no diário ainda." />}
+                {ocorrenciasRecentes.map(o=>{
+                  const group = db.groups.find(g=>g.id===o.groupId);
+                  return (
+                    <div key={o.id} style={{ display:'flex', gap:10, alignItems:'flex-start' }}>
+                      <div style={{ marginTop:5 }}><CategoryDot category={o.category}/></div>
+                      <div>
+                        <div style={{ fontSize:13, lineHeight:1.4 }}>{o.description}</div>
+                        <div style={{ fontSize:11, color:'var(--text-faint)', marginTop:2 }}>{fmtDate(o.date)} · {group?group.name:''} · {db.classes.find(c=>c.id===o.classId).name}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="card" style={{ padding:18 }}>
+              <h3 style={{ margin:'0 0 12px', fontSize:15, fontWeight:600 }}>Últimas alterações</h3>
+              <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+                {atividades.length===0 && <EmptyState small text="Nenhuma atividade registrada ainda." />}
+                {atividades.map((a,idx)=>(
+                  <div key={idx} style={{ fontSize:13, lineHeight:1.4, display:'flex', gap:8 }}>
+                    <span style={{ color:'var(--text-faint)', fontSize:11.5, flexShrink:0, width:66 }}>{fmtDate(a.date)}</span>
+                    <span>{a.text}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </React.Fragment>
+      )}
+
+      {tab==='representatives' && <RepresentativesTab ctx={ctx} />}
+    </div>
+  );
+}
+
+function RepresentativesTab({ ctx }){
+  const { db, actions, navigate } = ctx;
+  const [addingFor, setAddingFor] = useState(null); // classId em edição
+
+  return (
+    <div className="fade-up">
+      <p style={{ margin:'0 0 18px', color:'var(--text-muted)', fontSize:13 }}>
+        Cada turma pode ter alguns alunos como representantes (diferente do líder, que é por grupo). Recomendado: 2 a 3 por turma.
+      </p>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(280px,1fr))', gap:14 }}>
+        {DIAS.map(d=>{
+          const reps = db.classRepresentatives.filter(r=>r.classId===d.id).map(r=>({ rep:r, student: db.students.find(s=>s.id===r.studentId) })).filter(x=>x.student);
+          const classStudents = db.students.filter(s=>s.classId===d.id && s.status==='ativo' && !reps.find(r=>r.student.id===s.id));
+          const isAdding = addingFor===d.id;
+          return (
+            <div key={d.id} className="card" style={{ padding:16 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+                <div style={{ fontWeight:700, fontSize:14.5 }}>{d.nome}</div>
+                <StatusBadge tone={reps.length>=2 && reps.length<=3 ? 'success' : 'muted'}>{reps.length} representante{reps.length!==1?'s':''}</StatusBadge>
+              </div>
+
+              <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:12, minHeight:8 }}>
+                {reps.length===0 && <div style={{ fontSize:12.5, color:'var(--text-faint)' }}>Nenhum representante definido.</div>}
+                {reps.map(({rep,student})=>(
+                  <div key={rep.id} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'6px 8px', borderRadius:7, background:'var(--surface-2)' }}>
+                    <span onClick={()=>navigate('student',{studentId:student.id})} style={{ cursor:'pointer', fontSize:13, fontWeight:600 }}>{student.name}</span>
+                    <button className="btn btn-ghost btn-sm" style={{ padding:4 }} title="Remover representante" onClick={()=>actions.removeRepresentative(rep.id)}><Icon path={ICONS.x} size={13}/></button>
+                  </div>
+                ))}
+              </div>
+
+              {isAdding ? (
+                <AddRepresentativeInline classId={d.id} students={classStudents} onDone={()=>setAddingFor(null)} ctx={ctx} />
+              ) : (
+                <button className="btn btn-soft btn-sm" onClick={()=>setAddingFor(d.id)} disabled={classStudents.length===0}>
+                  <Icon path={ICONS.plus} size={13}/> Adicionar representante
+                </button>
+              )}
+              {!isAdding && classStudents.length===0 && reps.length===0 && (
+                <div style={{ fontSize:11.5, color:'var(--text-faint)', marginTop:6 }}>Cadastre alunos nesta turma primeiro.</div>
+              )}
+            </div>
+          );
+        })}
       </div>
+    </div>
+  );
+}
+
+function AddRepresentativeInline({ classId, students, onDone, ctx }){
+  const [studentId, setStudentId] = useState(students[0] ? students[0].id : '');
+  const { actions } = ctx;
+  return (
+    <div style={{ display:'flex', gap:6 }}>
+      <select value={studentId} onChange={e=>setStudentId(e.target.value)} style={{ flex:1 }}>
+        {students.map(s=> <option key={s.id} value={s.id}>{s.name}</option>)}
+      </select>
+      <button className="btn btn-primary btn-sm" onClick={()=>{ if(studentId){ actions.addRepresentative(classId, studentId); } onDone(); }}>OK</button>
+      <button className="btn btn-ghost btn-sm" onClick={onDone}><Icon path={ICONS.x} size={13}/></button>
     </div>
   );
 }
@@ -2297,7 +2413,9 @@ function ReportsScreen({ ctx, initial }){
     const doc = new jsPDF();
     const { studs, diary } = buildFilteredData();
     const clsName = classId ? db.classes.find(c=>c.id===classId).name : 'Todas as turmas';
-    const groupName = groupId ? db.groups.find(g=>g.id===groupId).name : null;
+    const groupObj = groupId ? db.groups.find(g=>g.id===groupId) : null;
+    const groupClassName = groupObj ? db.classes.find(c=>c.id===groupObj.classId).name : null;
+    const groupName = groupObj ? `${groupObj.name} — ${groupClassName}` : null;
     const studentName = studentId ? db.students.find(s=>s.id===studentId).name : null;
 
     doc.setFontSize(16);
@@ -2325,9 +2443,10 @@ function ReportsScreen({ ctx, initial }){
       head: [['Nome','RGM','Grupo','Líder','Nota individual','Nota do grupo']],
       body: studs.map(s=>{
         const g = db.groups.find(x=>x.id===s.groupId);
+        const gClassName = g ? db.classes.find(c=>c.id===g.classId).name : null;
         const gr = db.individualGrades.filter(x=>x.studentId===s.id);
         const last = gr.length ? gr[gr.length-1].value : null;
-        return [ s.name, s.rgm, g?g.name:'—', (g&&g.leaderId===s.id)?'Sim':'Não', fmtGrade(last), g?fmtGrade(g.groupGrade):'—' ];
+        return [ s.name, s.rgm, g?`${g.name} (${gClassName})`:'—', (g&&g.leaderId===s.id)?'Sim':'Não', fmtGrade(last), g?fmtGrade(g.groupGrade):'—' ];
       }),
       styles:{ fontSize:8.5 }, headStyles:{ fillColor:[30,33,45] }, margin:{ left:14, right:14 }
     });
@@ -2340,8 +2459,9 @@ function ReportsScreen({ ctx, initial }){
       head: [['Data','Grupo','Aluno','Categoria','Registro']],
       body: diary.map(d=>{
         const g = db.groups.find(x=>x.id===d.groupId);
+        const dClassName = db.classes.find(c=>c.id===d.classId);
         const st = d.studentId ? db.students.find(x=>x.id===d.studentId) : null;
-        return [ fmtDate(d.date), g?g.name:'—', st?st.name:'Grupo inteiro', d.category, d.description ];
+        return [ fmtDate(d.date), g?`${g.name} (${dClassName?dClassName.name:''})`:'—', st?st.name:'Grupo inteiro', d.category, d.description ];
       }),
       styles:{ fontSize:8, cellWidth:'wrap' }, headStyles:{ fillColor:[30,33,45] }, margin:{ left:14, right:14 },
       columnStyles:{ 4:{ cellWidth:70 } }

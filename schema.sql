@@ -102,6 +102,13 @@ create table if not exists app_meta (
   is_demo boolean default true
 );
 
+create table if not exists class_representatives (
+  id text primary key,
+  class_id text not null references classes(id),
+  student_id text not null,
+  created_at date
+);
+
 -- índices úteis para os filtros mais comuns
 create index if not exists idx_groups_class on groups(class_id);
 create index if not exists idx_students_class on students(class_id);
@@ -111,6 +118,7 @@ create index if not exists idx_diary_class on diary_entries(class_id);
 create index if not exists idx_diary_group on diary_entries(group_id);
 create index if not exists idx_group_history_group on group_history(group_id);
 create index if not exists idx_student_history_student on student_history(student_id);
+create index if not exists idx_class_reps_class on class_representatives(class_id);
 
 -- ============================================================
 -- RLS: liberado para a chave anon (sem login), uso individual.
@@ -125,12 +133,13 @@ alter table group_history enable row level security;
 alter table student_history enable row level security;
 alter table categories enable row level security;
 alter table app_meta enable row level security;
+alter table class_representatives enable row level security;
 
 do $$
 declare
   t text;
 begin
-  foreach t in array array['classes','groups','students','individual_grades','group_grades_history','diary_entries','group_history','student_history','categories','app_meta']
+  foreach t in array array['classes','groups','students','individual_grades','group_grades_history','diary_entries','group_history','student_history','categories','app_meta','class_representatives']
   loop
     execute format('drop policy if exists "allow anon all" on %I;', t);
     execute format('create policy "allow anon all" on %I for all to anon using (true) with check (true);', t);
