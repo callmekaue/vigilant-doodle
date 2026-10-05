@@ -97,6 +97,10 @@ app_meta            → id='singleton', is_demo (flag do banner de dados demonst
 - **Perfil do grupo** com integrantes, notas, diário, histórico de entrada/saída de alunos e alterações do grupo (líder, nome, nota).
 - **Perfil do aluno** com evolução de notas em gráfico, histórico de grupos em linha do tempo e registros de diário.
 - **Busca global** por nome, RGM ou nome de grupo.
+- **Representantes de turma** (2 a 3 por dia, distintos do líder de grupo), numa aba própria no Dashboard.
+- **Contato por WhatsApp** direto do Dashboard: tanto para líderes de grupo quanto para representantes de turma, com um clique salva o número (uma vez) e, depois, abre a conversa direto.
+- **"Onde a professora está"**: uma anotação fixa por dia da semana, na tela inicial do Dashboard — fica salva até você editar de novo, não precisa reescrever toda semana.
+- **Calendário de eventos**, também na tela inicial do Dashboard: visão do mês, lista de próximos eventos e cadastro rápido clicando num dia.
 - **Ações rápidas** no topo: novo aluno, novo grupo, lançar nota, registrar diário, gerar relatório.
 - **Central de relatórios** com filtros (turma, grupo, aluno, categoria, data inicial/final) e **geração real de PDF** (jsPDF + autoTable) com resumo, tabela de alunos/notas e tabela de diário.
 - **Persistência real**: localStorage por padrão, com sincronização opcional a um **banco SQL (Postgres/Supabase)** configurável pela própria interface — veja seção 4 — para funcionar hospedado e em múltiplos dispositivos.

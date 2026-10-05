@@ -9,6 +9,11 @@
 --    "anon public" e cole no app, no ícone "Banco de dados"
 --    (barra lateral) ou em Relatórios -> Conectar banco de dados.
 --
+-- Já rodou este script antes? Pode rodar de novo sem medo: todos os
+-- comandos usam "if not exists" / "on conflict do nothing", então
+-- atualizações (como a tabela class_representatives ou a coluna
+-- whatsapp) são adicionadas sem apagar ou duplicar nada que já existe.
+--
 -- IMPORTANTE SOBRE SEGURANÇA:
 -- Como o sistema não tem tela de login (por desenho, para uso de
 -- uma única pessoa), as políticas abaixo liberam leitura e escrita
@@ -24,8 +29,12 @@
 create table if not exists classes (
   id text primary key,
   name text not null,
-  day_index int not null
+  day_index int not null,
+  note text default ''
 );
+
+-- se a tabela classes já existia de uma versão anterior deste script
+alter table classes add column if not exists note text default '';
 
 create table if not exists groups (
   id text primary key,
@@ -45,8 +54,12 @@ create table if not exists students (
   group_id text,
   status text not null default 'ativo',
   observations text default '',
+  whatsapp text default '',
   created_at date
 );
+
+-- se a tabela students já existia de uma versão anterior deste script, garante a coluna nova
+alter table students add column if not exists whatsapp text default '';
 
 create table if not exists individual_grades (
   id text primary key,
@@ -109,6 +122,14 @@ create table if not exists class_representatives (
   created_at date
 );
 
+create table if not exists events (
+  id text primary key,
+  date date not null,
+  title text not null,
+  description text default '',
+  created_at_ms bigint
+);
+
 -- índices úteis para os filtros mais comuns
 create index if not exists idx_groups_class on groups(class_id);
 create index if not exists idx_students_class on students(class_id);
@@ -119,6 +140,7 @@ create index if not exists idx_diary_group on diary_entries(group_id);
 create index if not exists idx_group_history_group on group_history(group_id);
 create index if not exists idx_student_history_student on student_history(student_id);
 create index if not exists idx_class_reps_class on class_representatives(class_id);
+create index if not exists idx_events_date on events(date);
 
 -- ============================================================
 -- RLS: liberado para a chave anon (sem login), uso individual.
@@ -134,12 +156,13 @@ alter table student_history enable row level security;
 alter table categories enable row level security;
 alter table app_meta enable row level security;
 alter table class_representatives enable row level security;
+alter table events enable row level security;
 
 do $$
 declare
   t text;
 begin
-  foreach t in array array['classes','groups','students','individual_grades','group_grades_history','diary_entries','group_history','student_history','categories','app_meta','class_representatives']
+  foreach t in array array['classes','groups','students','individual_grades','group_grades_history','diary_entries','group_history','student_history','categories','app_meta','class_representatives','events']
   loop
     execute format('drop policy if exists "allow anon all" on %I;', t);
     execute format('create policy "allow anon all" on %I for all to anon using (true) with check (true);', t);

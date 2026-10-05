@@ -149,11 +149,11 @@ function randInt(a,b){ return Math.floor(Math.random()*(b-a+1))+a; }
 function pick(arr){ return arr[randInt(0,arr.length-1)]; }
 
 function createEmptyDatabase(){
-  const classes = DIAS.map((d,i) => ({ id:d.id, name:d.nome, dayIndex:i }));
+  const classes = DIAS.map((d,i) => ({ id:d.id, name:d.nome, dayIndex:i, note:'' }));
   return {
     classes,
     groups: [], students: [], individualGrades: [], groupGradesHistory: [],
-    diaryEntries: [], groupHistory: [], studentHistory: [], classRepresentatives: [],
+    diaryEntries: [], groupHistory: [], studentHistory: [], classRepresentatives: [], events: [],
     categories: CATEGORIAS_PADRAO.slice(),
     meta: { demo:false, createdAt: Date.now() }
   };
@@ -174,7 +174,8 @@ function seedDatabase(){
   const rgmSet = new Set();
   const nextRgm = ()=>{ let r; do{ r = String(randInt(100000,999999)); }while(rgmSet.has(r)); rgmSet.add(r); return r; };
 
-  const classes = DIAS.map(d => ({ id:d.id, name:d.nome, dayIndex: DIAS.indexOf(d) }));
+  const notasSala = { seg:'Sala 12', ter:'Sala 8', qua:'Sala 12', qui:'Sala 5', sex:'Sala 8', sab:'Sala 3' };
+  const classes = DIAS.map(d => ({ id:d.id, name:d.nome, dayIndex: DIAS.indexOf(d), note: `Andrea — ${notasSala[d.id]}` }));
   const groups = [];
   const students = [];
   const individualGrades = [];
@@ -183,6 +184,11 @@ function seedDatabase(){
   const groupHistory = [];
   const studentHistory = [];
   const classRepresentatives = [];
+  const events = [
+    { id: uid('ev'), date: todayISO(3), title:'Reunião de representantes', description:'Alinhamento mensal com todos os representantes de turma.', createdAt: Date.now() },
+    { id: uid('ev'), date: todayISO(10), title:'Entrega de notas', description:'Prazo final para lançar as notas do bimestre.', createdAt: Date.now() },
+    { id: uid('ev'), date: todayISO(-2), title:'Confraternização', description:'', createdAt: Date.now() },
+  ];
 
   DIAS.forEach(dia=>{
     const n = gruposPorDia[dia.id];
@@ -258,14 +264,19 @@ function seedDatabase(){
   }
   diaryEntries.sort((a,b)=> a.date < b.date ? 1 : -1);
 
-  return { classes, groups, students, individualGrades, groupGradesHistory, diaryEntries, groupHistory, studentHistory, classRepresentatives, categories: CATEGORIAS_PADRAO.slice(), meta:{ demo:true, createdAt: Date.now() } };
+  return { classes, groups, students, individualGrades, groupGradesHistory, diaryEntries, groupHistory, studentHistory, classRepresentatives, events, categories: CATEGORIAS_PADRAO.slice(), meta:{ demo:true, createdAt: Date.now() } };
 }
 
 /* Garante que bases salvas antes de um novo recurso (ex.: classRepresentatives)
    não quebrem a tela — preenche qualquer campo novo que esteja faltando. */
 function patchDbShape(db){
   const empty = createEmptyDatabase();
-  return { ...empty, ...db, classRepresentatives: db.classRepresentatives || [] };
+  return {
+    ...empty, ...db,
+    classRepresentatives: db.classRepresentatives || [],
+    events: db.events || [],
+    classes: (db.classes && db.classes.length ? db.classes : empty.classes).map(c=> ({ note:'', ...c })),
+  };
 }
 function loadDB(){
   try{
@@ -307,14 +318,14 @@ function createSbClient(cfg){
 }
 
 /* ---- mapeamento camelCase (app) <-> snake_case (SQL) ---- */
-const toClassRow  = c => ({ id:c.id, name:c.name, day_index:c.dayIndex });
-const fromClassRow = r => ({ id:r.id, name:r.name, dayIndex:r.day_index });
+const toClassRow  = c => ({ id:c.id, name:c.name, day_index:c.dayIndex, note:c.note||'' });
+const fromClassRow = r => ({ id:r.id, name:r.name, dayIndex:r.day_index, note:r.note||'' });
 
 const toGroupRow  = g => ({ id:g.id, class_id:g.classId, name:g.name, status:g.status, leader_id:g.leaderId||null, group_grade:(g.groupGrade===undefined?null:g.groupGrade), created_at:g.createdAt });
 const fromGroupRow = r => ({ id:r.id, classId:r.class_id, name:r.name, status:r.status, leaderId:r.leader_id, groupGrade:r.group_grade, createdAt:r.created_at });
 
-const toStudentRow = s => ({ id:s.id, name:s.name, rgm:s.rgm, class_id:s.classId, group_id:s.groupId||null, status:s.status, observations:s.observations||'', created_at:s.createdAt });
-const fromStudentRow = r => ({ id:r.id, name:r.name, rgm:r.rgm, classId:r.class_id, groupId:r.group_id, status:r.status, observations:r.observations||'', createdAt:r.created_at });
+const toStudentRow = s => ({ id:s.id, name:s.name, rgm:s.rgm, class_id:s.classId, group_id:s.groupId||null, status:s.status, observations:s.observations||'', whatsapp:s.whatsapp||'', created_at:s.createdAt });
+const fromStudentRow = r => ({ id:r.id, name:r.name, rgm:r.rgm, classId:r.class_id, groupId:r.group_id, status:r.status, observations:r.observations||'', whatsapp:r.whatsapp||'', createdAt:r.created_at });
 
 const toIndividualGradeRow = g => ({ id:g.id, student_id:g.studentId, class_id:g.classId, group_id:g.groupId||null, value:g.value, label:g.label, date:g.date });
 const fromIndividualGradeRow = r => ({ id:r.id, studentId:r.student_id, classId:r.class_id, groupId:r.group_id, value:Number(r.value), label:r.label, date:r.date });
@@ -333,6 +344,9 @@ const fromStudentHistoryRow = r => ({ id:r.id, studentId:r.student_id, date:r.da
 
 const toClassRepRow = r => ({ id:r.id, class_id:r.classId, student_id:r.studentId, created_at:r.createdAt });
 const fromClassRepRow = r => ({ id:r.id, classId:r.class_id, studentId:r.student_id, createdAt:r.created_at });
+
+const toEventRow = e => ({ id:e.id, date:e.date, title:e.title, description:e.description||'', created_at_ms:e.createdAt });
+const fromEventRow = r => ({ id:r.id, date:r.date, title:r.title, description:r.description||'', createdAt:r.created_at_ms });
 
 async function sbUpsert(client, table, row){
   if(!client) return;
@@ -381,7 +395,7 @@ async function testSbConnection(client){
 
 /* Busca o banco inteiro do Supabase e monta o objeto `db` no mesmo formato usado no app. */
 async function fetchRemoteDB(client){
-  const [classesR, groupsR, studentsR, igR, ggR, deR, ghR, shR, catR, metaR, repR] = await Promise.all([
+  const [classesR, groupsR, studentsR, igR, ggR, deR, ghR, shR, catR, metaR, repR, evR] = await Promise.all([
     client.from('classes').select('*'),
     client.from('groups').select('*'),
     client.from('students').select('*'),
@@ -393,16 +407,18 @@ async function fetchRemoteDB(client){
     client.from('categories').select('*'),
     client.from('app_meta').select('*').eq('id','singleton').maybeSingle(),
     client.from('class_representatives').select('*'),
+    client.from('events').select('*'),
   ]);
   const firstError = [classesR,groupsR,studentsR,igR,ggR,deR,ghR,shR,catR].map(r=>r.error).find(Boolean);
   if(firstError) throw firstError;
-  // class_representatives é uma tabela nova: se o projeto Supabase ainda não rodou o
-  // schema.sql atualizado, ignora silenciosamente em vez de travar a conexão toda.
-  if(repR.error) console.warn('Tabela class_representatives ainda não existe no banco. Rode o schema.sql atualizado para usar Representantes de Turma.', repR.error);
+  // class_representatives e events são tabelas novas: se o projeto Supabase ainda não
+  // rodou o schema.sql atualizado, ignora silenciosamente em vez de travar a conexão toda.
+  if(repR.error) console.warn('Tabela class_representatives ainda não existe no banco. Rode o schema.sql atualizado.', repR.error);
+  if(evR.error) console.warn('Tabela events ainda não existe no banco. Rode o schema.sql atualizado.', evR.error);
 
   let classes = (classesR.data||[]).map(fromClassRow);
   if(classes.length===0){
-    classes = DIAS.map((d,i)=> ({ id:d.id, name:d.nome, dayIndex:i }));
+    classes = DIAS.map((d,i)=> ({ id:d.id, name:d.nome, dayIndex:i, note:'' }));
     const { error } = await client.from('classes').upsert(classes.map(toClassRow));
     if(error) throw error;
   }
@@ -425,6 +441,7 @@ async function fetchRemoteDB(client){
     groupHistory: (ghR.data||[]).map(fromGroupHistoryRow),
     studentHistory: (shR.data||[]).map(fromStudentHistoryRow),
     classRepresentatives: repR.error ? [] : (repR.data||[]).map(fromClassRepRow),
+    events: evR.error ? [] : (evR.data||[]).map(fromEventRow),
     meta: { demo:isDemo, createdAt: Date.now() }
   };
 }
@@ -439,6 +456,7 @@ async function fullPushDB(client, db){
     ['group_history', db.groupHistory.map(toGroupHistoryRow)],
     ['student_history', db.studentHistory.map(toStudentHistoryRow)],
     ['class_representatives', (db.classRepresentatives||[]).map(toClassRepRow)],
+    ['events', (db.events||[]).map(toEventRow)],
     ['students', db.students.map(toStudentRow)],
     ['groups', db.groups.map(toGroupRow)],
   ];
@@ -486,6 +504,7 @@ const ICONS = {
   database:"M4 6c0-1.1 3.58-2 8-2s8 .9 8 2-3.58 2-8 2-8-.9-8-2zM4 6v6c0 1.1 3.58 2 8 2s8-.9 8-2V6M4 12v6c0 1.1 3.58 2 8 2s8-.9 8-2v-6",
   cloudOff:"M22.61 16.95A5 5 0 0 0 18 9h-1.26a8 8 0 0 0-7.05-6M5 5 1 1m0 0 22 22M1 1l6.36 6.36A8 8 0 0 0 3 19h15",
   refresh:"M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15",
+  message:"M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z",
 };
 
 /* ============================================================
@@ -507,6 +526,63 @@ function StatusBadge({ tone='muted', children }){
 
 function LeaderBadge({ size=14 }){
   return <Icon path={ICONS.crown} size={size} className="inline-block" style={{color:'var(--accent)'}} />;
+}
+
+/* Monta o link do WhatsApp a partir do número salvo (mantém só dígitos). */
+function buildWaLink(number, message){
+  const digits = String(number||'').replace(/\D/g,'');
+  if(!digits) return null;
+  const base = `https://wa.me/${digits}`;
+  return message ? `${base}?text=${encodeURIComponent(message)}` : base;
+}
+
+/* Botão de contato por WhatsApp para um aluno (líder ou representante).
+   Sem número salvo: abre um modal pra cadastrar. Com número: abre o WhatsApp direto. */
+function WhatsAppButton({ student, actions, size=13 }){
+  const [editing, setEditing] = useState(false);
+  const hasNumber = !!(student.whatsapp && student.whatsapp.trim());
+
+  return (
+    <React.Fragment>
+      <button
+        className="btn btn-ghost btn-sm"
+        style={{ padding:4, color: hasNumber ? '#4ADE80' : 'var(--text-faint)' }}
+        title={hasNumber ? `Abrir WhatsApp de ${student.name}` : `Adicionar WhatsApp de ${student.name}`}
+        onClick={(e)=>{ e.stopPropagation(); if(hasNumber){ window.open(buildWaLink(student.whatsapp), '_blank'); } else { setEditing(true); } }}
+      >
+        <Icon path={ICONS.message} size={size}/>
+      </button>
+      {hasNumber && (
+        <button className="btn btn-ghost btn-sm" style={{ padding:4 }} title="Editar número de WhatsApp" onClick={(e)=>{ e.stopPropagation(); setEditing(true); }}>
+          <Icon path={ICONS.edit} size={size-2}/>
+        </button>
+      )}
+      {editing && <WhatsAppNumberModal student={student} actions={actions} onClose={()=>setEditing(false)} />}
+    </React.Fragment>
+  );
+}
+
+function WhatsAppNumberModal({ student, actions, onClose }){
+  const [value, setValue] = useState(student.whatsapp || '');
+  const save = (openAfter)=>{
+    const digits = value.replace(/\D/g,'');
+    actions.updateStudent(student.id, { whatsapp: digits });
+    onClose();
+    if(openAfter && digits) window.open(buildWaLink(digits), '_blank');
+  };
+  return (
+    <Modal title={`WhatsApp de ${student.name}`} onClose={onClose} width={420} footer={
+      <React.Fragment>
+        {student.whatsapp && <button className="btn btn-danger" onClick={()=>{ actions.updateStudent(student.id, { whatsapp:'' }); onClose(); }}>Remover número</button>}
+        <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
+        <button className="btn btn-primary" onClick={()=>save(true)}>Salvar e abrir WhatsApp</button>
+      </React.Fragment>
+    }>
+      <Field label="Número (com DDI + DDD, só números)" hint="Ex.: 5511999998888 — Brasil (55) + DDD (11) + número, sem espaços, traços ou +.">
+        <input value={value} onChange={e=>setValue(e.target.value)} placeholder="5511999998888" autoFocus />
+      </Field>
+    </Modal>
+  );
 }
 
 function CategoryDot({ category }){
@@ -852,6 +928,30 @@ function App(){
       notify('Representante removido.', 'success');
     },
 
+    /* Anotação fixa por dia da semana (ex.: onde a professora está) — fica salva até
+       alguém editar de novo; não muda sozinha, não tem histórico, é só um campo vivo. */
+    updateClassNote: (classId, note) => {
+      let updatedClass = null;
+      setDb(prev=>({ ...prev, classes: prev.classes.map(c=>{ if(c.id!==classId) return c; updatedClass = { ...c, note }; return updatedClass; }) }));
+      if(updatedClass) sbPersist(client=> sbUpsert(client, 'classes', toClassRow(updatedClass)));
+    },
+
+    addEvent: ({ date, title, description }) => {
+      if(!date) return notify('Escolha uma data para o evento.', 'error');
+      if(!title || !title.trim()) return notify('Dê um título para o evento.', 'error');
+      const event = { id: uid('ev'), date, title: title.trim(), description: (description||'').trim(), createdAt: Date.now() };
+      setDb(prev=>({ ...prev, events:[...(prev.events||[]), event] }));
+      sbPersist(client=> sbInsert(client, 'events', toEventRow(event)));
+      notify('Evento adicionado ao calendário.', 'success');
+      return event.id;
+    },
+
+    removeEvent: (eventId) => {
+      setDb(prev=>({ ...prev, events: (prev.events||[]).filter(e=>e.id!==eventId) }));
+      sbPersist(client=> sbDeleteById(client, 'events', eventId));
+      notify('Evento removido.', 'success');
+    },
+
     setGroupGrade: (groupId, value) => {
       const v = parseFloat(String(value).replace(',','.'));
       if(isNaN(v) || v<0 || v>10) return notify('A nota deve estar entre 0 e 10.', 'error');
@@ -914,7 +1014,7 @@ function App(){
       let next = null;
       setDb(prev=>{
         next = {
-          classes: prev.classes, categories: prev.categories,
+          classes: prev.classes, categories: prev.categories, events: prev.events,
           groups:[], students:[], individualGrades:[], groupGradesHistory:[], diaryEntries:[], groupHistory:[], studentHistory:[], classRepresentatives:[],
           meta:{ demo:false, createdAt: Date.now() }
         };
@@ -1207,7 +1307,7 @@ function QuickActionModal({ ctx, kind, onClose }){
    DASHBOARD
    ============================================================ */
 function Dashboard({ ctx, getClassStats }){
-  const { db, navigate } = ctx;
+  const { db, navigate, actions } = ctx;
   const [tab, setTab] = useState('overview');
   const totalAlunos = db.students.filter(s=>s.status==='ativo').length;
   const totalGrupos = db.groups.filter(g=>g.status==='ativo').length;
@@ -1255,6 +1355,8 @@ function Dashboard({ ctx, getClassStats }){
             <StatCard label="Média geral" value={mediaGeral===null?'—':fmtGrade(mediaGeral)} icon={ICONS.file} tone="success" />
           </div>
 
+          <TeacherLocationCard ctx={ctx} />
+
           <div style={{ marginBottom:12, display:'flex', alignItems:'baseline', justifyContent:'space-between' }}>
             <h2 style={{ fontSize:17, margin:0, fontWeight:600 }}>Turmas da semana</h2>
             <span style={{ fontSize:12, color:'var(--text-faint)' }}>Clique em um dia para abrir a turma</span>
@@ -1284,6 +1386,8 @@ function Dashboard({ ctx, getClassStats }){
             })}
           </div>
 
+          <EventsCalendarCard ctx={ctx} />
+
           <div style={{ display:'grid', gridTemplateColumns:'1.3fr 1fr', gap:16, marginBottom:24 }} className="grid-stack">
             <div className="card" style={{ padding:18 }}>
               <h3 style={{ margin:'0 0 14px', fontSize:15, fontWeight:600 }}>Alunos por dia</h3>
@@ -1294,9 +1398,12 @@ function Dashboard({ ctx, getClassStats }){
               <div style={{ display:'flex', flexDirection:'column', gap:2, maxHeight:230, overflowY:'auto' }}>
                 {lideresAtuais.length===0 && <EmptyState small text="Nenhum líder definido ainda." />}
                 {lideresAtuais.map(({group,student})=>(
-                  <div key={group.id} onClick={()=>navigate('group',{groupId:group.id})} className="sidebar-link" style={{ cursor:'pointer', color:'var(--text)', justifyContent:'space-between' }}>
-                    <span style={{ display:'flex', alignItems:'center', gap:8 }}><LeaderBadge/> {student.name}</span>
-                    <span style={{ fontSize:11.5, color:'var(--text-faint)' }}>{group.name} · {db.classes.find(c=>c.id===group.classId).name.replace('-feira','')}</span>
+                  <div key={group.id} className="sidebar-link" style={{ color:'var(--text)', justifyContent:'space-between' }}>
+                    <span onClick={()=>navigate('group',{groupId:group.id})} style={{ display:'flex', alignItems:'center', gap:8, cursor:'pointer' }}><LeaderBadge/> {student.name}</span>
+                    <span style={{ display:'flex', alignItems:'center', gap:4 }}>
+                      <span style={{ fontSize:11.5, color:'var(--text-faint)' }}>{group.name} · {db.classes.find(c=>c.id===group.classId).name.replace('-feira','')}</span>
+                      <WhatsAppButton student={student} actions={actions} />
+                    </span>
                   </div>
                 ))}
               </div>
@@ -1369,7 +1476,10 @@ function RepresentativesTab({ ctx }){
                 {reps.map(({rep,student})=>(
                   <div key={rep.id} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'6px 8px', borderRadius:7, background:'var(--surface-2)' }}>
                     <span onClick={()=>navigate('student',{studentId:student.id})} style={{ cursor:'pointer', fontSize:13, fontWeight:600 }}>{student.name}</span>
-                    <button className="btn btn-ghost btn-sm" style={{ padding:4 }} title="Remover representante" onClick={()=>actions.removeRepresentative(rep.id)}><Icon path={ICONS.x} size={13}/></button>
+                    <span style={{ display:'flex', alignItems:'center', gap:2 }}>
+                      <WhatsAppButton student={student} actions={actions} />
+                      <button className="btn btn-ghost btn-sm" style={{ padding:4 }} title="Remover representante" onClick={()=>actions.removeRepresentative(rep.id)}><Icon path={ICONS.x} size={13}/></button>
+                    </span>
                   </div>
                 ))}
               </div>
@@ -1403,6 +1513,223 @@ function AddRepresentativeInline({ classId, students, onDone, ctx }){
       <button className="btn btn-primary btn-sm" onClick={()=>{ if(studentId){ actions.addRepresentative(classId, studentId); } onDone(); }}>OK</button>
       <button className="btn btn-ghost btn-sm" onClick={onDone}><Icon path={ICONS.x} size={13}/></button>
     </div>
+  );
+}
+
+/* ============================================================
+   ANOTAÇÃO FIXA POR DIA DA SEMANA — ex.: onde a professora está.
+   Fica salva até alguém editar de novo; não há histórico, nem reset semanal.
+   ============================================================ */
+function TeacherLocationCard({ ctx }){
+  return (
+    <div className="card" style={{ padding:18, marginBottom:22 }}>
+      <h3 style={{ margin:'0 0 4px', fontSize:15, fontWeight:600 }}>Onde a professora está</h3>
+      <p style={{ margin:'0 0 14px', fontSize:12, color:'var(--text-faint)' }}></p>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(220px,1fr))', gap:10 }}>
+        {DIAS.map(d=> <TeacherLocationRow key={d.id} dia={d} ctx={ctx} />)}
+      </div>
+    </div>
+  );
+}
+
+function TeacherLocationRow({ dia, ctx }){
+  const { db, actions } = ctx;
+  const cls = db.classes.find(c=>c.id===dia.id);
+  const [value, setValue] = useState(cls.note || '');
+  const [savedFlash, setSavedFlash] = useState(false);
+  const focusedRef = useRef(false);
+
+  // mantém o campo em dia se outro dispositivo atualizar a anotação (polling/refresh) —
+  // mas nunca enquanto o representante está digitando aqui, pra não apagar o que ele está escrevendo.
+  useEffect(()=>{ if(!focusedRef.current) setValue(cls.note || ''); }, [cls.note]);
+
+  const commit = ()=>{
+    focusedRef.current = false;
+    if(value === (cls.note||'')) return;
+    actions.updateClassNote(dia.id, value);
+    setSavedFlash(true);
+    setTimeout(()=>setSavedFlash(false), 1200);
+  };
+
+  return (
+    <div>
+      <div style={{ fontSize:11.5, fontWeight:700, color:'var(--text-faint)', marginBottom:5, display:'flex', justifyContent:'space-between' }}>
+        <span>{dia.nome.toUpperCase()}</span>
+        {savedFlash && <span style={{ color:'#8CF0B0' }}>salvo ✓</span>}
+      </div>
+      <input
+        value={value}
+        onFocus={()=>{ focusedRef.current = true; }}
+        onChange={e=>setValue(e.target.value)}
+        onBlur={commit}
+        onKeyDown={e=>{ if(e.key==='Enter') e.currentTarget.blur(); }}
+        placeholder="Ex.: Andrea — Sala 12"
+      />
+    </div>
+  );
+}
+
+/* ============================================================
+   CALENDÁRIO DE EVENTOS
+   ============================================================ */
+const WEEKDAY_LABELS = ['Dom','Seg','Ter','Qua','Qui','Sex','Sáb'];
+function ymKey(date){ return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}`; }
+function isoFromParts(y,m,d){ return `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`; }
+function monthLabel(date){ return date.toLocaleDateString('pt-BR', { month:'long', year:'numeric' }); }
+
+function EventsCalendarCard({ ctx }){
+  const { db } = ctx;
+  const [cursor, setCursor] = useState(()=>{ const t=new Date(); return new Date(t.getFullYear(), t.getMonth(), 1); });
+  const [selectedDate, setSelectedDate] = useState(null);
+  const [newEventOpen, setNewEventOpen] = useState(false);
+
+  const year = cursor.getFullYear(), month = cursor.getMonth();
+  const firstWeekday = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month+1, 0).getDate();
+  const todayIso = todayISO();
+
+  const eventsByDate = useMemo(()=>{
+    const map = {};
+    (db.events||[]).forEach(e=> (map[e.date] = map[e.date]||[]).push(e));
+    return map;
+  }, [db.events]);
+
+  const cells = [];
+  for(let i=0;i<firstWeekday;i++) cells.push(null);
+  for(let d=1; d<=daysInMonth; d++) cells.push(d);
+
+  const upcoming = (db.events||[]).filter(e=> e.date>=todayIso).sort((a,b)=> a.date<b.date?-1:1).slice(0,6);
+
+  return (
+    <div className="card" style={{ padding:18, marginBottom:24 }}>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14, flexWrap:'wrap', gap:8 }}>
+        <h3 style={{ margin:0, fontSize:15, fontWeight:600 }}>Calendário de eventos</h3>
+        <button className="btn btn-primary btn-sm" onClick={()=>setNewEventOpen(true)}><Icon path={ICONS.plus} size={13}/> Novo evento</button>
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'1.3fr 1fr', gap:20 }} className="grid-stack">
+        <div>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
+            <button className="btn btn-ghost btn-sm" onClick={()=>setCursor(new Date(year, month-1, 1))}><Icon path={ICONS.arrowLeft} size={14}/></button>
+            <div style={{ fontSize:13.5, fontWeight:700, textTransform:'capitalize' }}>{monthLabel(cursor)}</div>
+            <button className="btn btn-ghost btn-sm" onClick={()=>setCursor(new Date(year, month+1, 1))}><Icon path={ICONS.chevronRight} size={14}/></button>
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:4, marginBottom:4 }}>
+            {WEEKDAY_LABELS.map(w=> <div key={w} style={{ textAlign:'center', fontSize:10.5, color:'var(--text-faint)', fontWeight:700 }}>{w}</div>)}
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:4 }}>
+            {cells.map((d,i)=>{
+              if(d===null) return <div key={i}/>;
+              const iso = isoFromParts(year, month, d);
+              const dayEvents = eventsByDate[iso]||[];
+              const isToday = iso===todayIso;
+              return (
+                <div key={i} onClick={()=>setSelectedDate(iso)}
+                  className="card-hover"
+                  style={{
+                    minHeight:52, borderRadius:8, padding:'5px 6px', cursor:'pointer',
+                    border: isToday ? '1px solid var(--accent)' : '1px solid var(--border)',
+                    background: dayEvents.length ? 'var(--accent-soft)' : 'var(--surface-2)'
+                  }}>
+                  <div style={{ fontSize:11.5, fontWeight: isToday?700:500, color: isToday?'var(--accent)':'var(--text-muted)' }}>{d}</div>
+                  {dayEvents.slice(0,2).map(ev=>(
+                    <div key={ev.id} style={{ fontSize:9.5, color:'var(--text)', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', marginTop:2 }}>{ev.title}</div>
+                  ))}
+                  {dayEvents.length>2 && <div style={{ fontSize:9, color:'var(--text-faint)' }}>+{dayEvents.length-2}</div>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div>
+          <h4 style={{ margin:'0 0 10px', fontSize:12.5, fontWeight:700, color:'var(--text-muted)' }}>PRÓXIMOS EVENTOS</h4>
+          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+            {upcoming.length===0 && <EmptyState small text="Nenhum evento futuro." />}
+            {upcoming.map(ev=>(
+              <div key={ev.id} onClick={()=>setSelectedDate(ev.date)} className="card card-hover" style={{ padding:10, cursor:'pointer' }}>
+                <div style={{ fontSize:11, color:'var(--accent)', fontWeight:700 }}>{fmtDate(ev.date)}</div>
+                <div style={{ fontSize:13, fontWeight:600 }}>{ev.title}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {selectedDate && <DayEventsModal date={selectedDate} ctx={ctx} onClose={()=>setSelectedDate(null)} />}
+      {newEventOpen && <EventFormModal ctx={ctx} onClose={()=>setNewEventOpen(false)} />}
+    </div>
+  );
+}
+
+function DayEventsModal({ date, ctx, onClose }){
+  const { db, actions, askConfirm } = ctx;
+  const [adding, setAdding] = useState(false);
+  const events = (db.events||[]).filter(e=>e.date===date);
+
+  return (
+    <Modal title={fmtDate(date)} onClose={onClose} width={460}>
+      <div style={{ display:'flex', flexDirection:'column', gap:8, marginBottom:14 }}>
+        {events.length===0 && <EmptyState small text="Nenhum evento nesta data." />}
+        {events.map(ev=>(
+          <div key={ev.id} className="card" style={{ padding:12 }}>
+            <div style={{ display:'flex', justifyContent:'space-between', gap:8 }}>
+              <div style={{ fontWeight:600, fontSize:13.5 }}>{ev.title}</div>
+              <button className="btn btn-ghost btn-sm" style={{ padding:4 }} onClick={()=> askConfirm({ title:'Remover evento', tone:'danger', confirmLabel:'Remover', message:`Remover o evento "${ev.title}"?`, onConfirm:()=>actions.removeEvent(ev.id) })}>
+                <Icon path={ICONS.trash} size={13}/>
+              </button>
+            </div>
+            {ev.description && <div style={{ fontSize:12.5, color:'var(--text-muted)', marginTop:4 }}>{ev.description}</div>}
+          </div>
+        ))}
+      </div>
+      {adding ? (
+        <EventFormModal ctx={ctx} fixedDate={date} onClose={()=>setAdding(false)} embeddedInline />
+      ) : (
+        <button className="btn btn-soft btn-sm" onClick={()=>setAdding(true)}><Icon path={ICONS.plus} size={13}/> Adicionar evento nesta data</button>
+      )}
+    </Modal>
+  );
+}
+
+function EventFormModal({ ctx, fixedDate, onClose, embeddedInline }){
+  const { actions } = ctx;
+  const [date, setDate] = useState(fixedDate || todayISO());
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+
+  const submit = ()=>{
+    const id = actions.addEvent({ date, title, description });
+    if(id) onClose();
+  };
+
+  const fields = (
+    <React.Fragment>
+      {!fixedDate && <Field label="Data"><input type="date" value={date} onChange={e=>setDate(e.target.value)} /></Field>}
+      <Field label="Título"><input value={title} onChange={e=>setTitle(e.target.value)} placeholder="Ex.: Reunião de representantes" autoFocus /></Field>
+      <Field label="Descrição (opcional)"><textarea rows={3} value={description} onChange={e=>setDescription(e.target.value)} /></Field>
+    </React.Fragment>
+  );
+
+  if(embeddedInline){
+    return (
+      <div className="card" style={{ padding:12, marginTop:4 }}>
+        {fields}
+        <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
+          <button className="btn btn-ghost btn-sm" onClick={onClose}>Cancelar</button>
+          <button className="btn btn-primary btn-sm" onClick={submit}>Adicionar</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <Modal title="Novo evento" onClose={onClose} width={440} footer={
+      <React.Fragment><button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
+      <button className="btn btn-primary" onClick={submit}>Adicionar</button></React.Fragment>
+    }>
+      {fields}
+    </Modal>
   );
 }
 
